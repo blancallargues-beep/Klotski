@@ -53,10 +53,15 @@ def compute_measures(puzzle: Puzzle, g: gt.Graph, goal_vertices: list[int], star
     indirection = n_moves / lower_bound
 
     # --- 3. Bottleneck Ratio (Estructura de fases) ---
-    # Un node és un 'cut vertex' si la seva eliminació augmenta el nombre de components
-    articulation_map = gt.articulation_points(g)
-    n_articulation = sum(1 for v in g.vertices() if articulation_map[v])
-    bottleneck_ratio = n_articulation / n_states if n_states > 0 else 0.0
+    # Usem els ponts (arestes biconnectades) com a indicador d'estructura
+    # label_biconnected_components retorna (comp_map, is_bridge_map, ...)
+    comp, is_articulation = gt.label_biconnected_components(g)[:2]
+    # comp és un EdgePropertyMap amb l'índex de component biconnex per aresta
+    # Una aresta és un pont si forma ella sola una component (comp únic d'1 aresta)
+    from collections import Counter
+    comp_count = Counter(int(comp[e]) for e in g.edges())
+    n_bridges = sum(1 for e in g.edges() if comp_count[int(comp[e])] == 1)
+    bottleneck_ratio = n_bridges / g.num_edges() if g.num_edges() > 0 else 0.0
 
     # --- 4. Detour Fraction (Engany / Contraintuïció) ---
     # Analitzem el camí òptim pas a pas

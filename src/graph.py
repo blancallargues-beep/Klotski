@@ -38,15 +38,24 @@ def state_key(puzzle: Puzzle, state_or_json: State | str) -> StateKey:
     return state_or_json.to_json()
 
 
-def build_graph(puzzle: Puzzle) -> tuple[gt.Graph, dict[State, int], list[int], list[int]]:
+MAX_STATES = 10_000  # Límit per al generador; evita BFS infinits
+
+
+def build_graph(
+    puzzle: Puzzle,
+    max_states: int | None = None,
+) -> tuple[gt.Graph, dict[State, int], list[int], list[int]]:
     """
-    Construeix el graf complet de l'espai d'estats del puzzle per BFS.
+    Construeix el graf de l'espai d'estats del puzzle per BFS.
+
+    Si max_states és un enter, el BFS s'atura quan s'arriba a aquest nombre
+    d'estats (útil per al generador, que no necessita el graf complet).
 
     Retorna:
       - g: el graf (no dirigit)
       - state_index: diccionari de State -> índex de vèrtex
       - goal_vertices: llista d'índexs de vèrtexs que són estat final
-      - start_vertex: índex del vèrtex inicial (llista d'1 element)
+      - start_vertices: llista d'1 element amb l'índex del vèrtex inicial
     """
     g = gt.Graph(directed=False)
 
@@ -100,8 +109,9 @@ def build_graph(puzzle: Puzzle) -> tuple[gt.Graph, dict[State, int], list[int], 
             next_v = get_or_create_vertex(next_state)
 
             if next_state not in visited:
-                visited.add(next_state)
-                queue.append(next_state)
+                if max_states is None or len(visited) < max_states:
+                    visited.add(next_state)
+                    queue.append(next_state)
 
             # Afegim l'aresta si no existeix ja (graf no dirigit)
             if not g.edge(current_v, next_v):

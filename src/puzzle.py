@@ -82,6 +82,12 @@ class State:
         """Retorna la llista de posicions en JSON."""
         return json.dumps(self._to_obj())
 
+    @classmethod
+    def from_json(cls, s: str) -> "State":
+        """Crea un State a partir d'un string JSON (llista de posicions)."""
+        obj = json.loads(s)
+        return cls(positions=tuple(tuple(p) for p in obj))
+
 
 @dataclass(frozen=True)
 class Puzzle:

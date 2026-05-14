@@ -160,13 +160,11 @@ def try_generate(
         if puzzle is None:
             continue
 
-        # Avaluem
+        # Avaluem (limitem el BFS per no bloquejar-nos)
         try:
-            g, state_index, goal_vertices, start_vertices = build_graph(puzzle)
+            g, state_index, goal_vertices, start_vertices = build_graph(puzzle, max_states=3000)
             if not goal_vertices:
                 continue  # Irressoluble
-            if g.num_vertices() > 5000:
-                continue  # Massa gran, evitem bloquejos
             measures = compute_measures(puzzle, g, goal_vertices, start_vertices)
             if measures["n_moves"] < 2:
                 continue  # Massa fàcil
