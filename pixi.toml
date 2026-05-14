@@ -9,3 +9,4 @@ version = "0.1.0"
 [dependencies]
 graph-tool = ">=2.98,<3"
 pygame = ">=2.6.1,<3"
+pytest = ">=9.0.3,<10"

@@ -165,7 +165,9 @@ def try_generate(
             g, state_index, goal_vertices, start_vertices = build_graph(puzzle)
             if not goal_vertices:
                 continue  # Irressoluble
-            measures = compute_measures(g, goal_vertices, start_vertices)
+            if g.num_vertices() > 5000:
+                continue  # Massa gran, evitem bloquejos
+            measures = compute_measures(puzzle, g, goal_vertices, start_vertices)
             if measures["n_moves"] < 2:
                 continue  # Massa fàcil
             s = score(measures)
