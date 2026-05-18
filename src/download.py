@@ -31,6 +31,7 @@ def download_puzzle(puzzle_id: str) -> Puzzle:
     url = f"{BASE_URL}/api/puzzles/{puzzle_id}"
     with urllib.request.urlopen(url) as response:
         data = response.read().decode()
+    print("RAW JSON:", data[:500])  # DEBUG
     return Puzzle.from_json(data), data
 
 
@@ -41,13 +42,20 @@ def main() -> None:
     if not args:
         print("Descarregant llista de puzzles...\n")
         puzzles = list_puzzles()
-        print(f"{'ID':>20}  {'Valoració':>10}  {'Autor'}")
-        print("-" * 60)
-        for p in puzzles:
-            pid = p.get("id", "?")
-            rating = p.get("rating", 0.0)
-            author = p.get("author", "desconegut")
-            print(f"{pid:>20}  {rating:>10.2f}  {author}")
+        # L'API pot retornar llista de strings (IDs) o de diccionaris
+        if puzzles and isinstance(puzzles[0], str):
+            print(f"{'ID':>40}")
+            print("-" * 42)
+            for pid in puzzles:
+                print(f"{pid:>40}")
+        else:
+            print(f"{'ID':>20}  {'Valoració':>10}  {'Autor'}")
+            print("-" * 60)
+            for p in puzzles:
+                pid = p.get("id", "?")
+                rating = p.get("rating", 0.0)
+                author = p.get("author", "desconegut")
+                print(f"{pid:>20}  {rating:>10.2f}  {author}")
         print(f"\nTotal: {len(puzzles)} puzzles")
         return
 

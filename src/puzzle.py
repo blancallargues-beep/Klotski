@@ -163,7 +163,8 @@ class Puzzle:
     def from_json(cls, s: str) -> Puzzle:
         """Crea un Puzzle a partir d'un string JSON."""
         obj = json.loads(s)
-        walls = tuple(tuple(c) for c in obj["walls"])
+        # walls és opcional (el servidor pot no incloure-la)
+        walls = tuple(tuple(c) for c in obj.get("walls", []))
         pieces = tuple(Piece(*[tuple(c) for c in coords]) for coords in obj["pieces"])
         start = State(tuple(tuple(p) for p in obj["start"]))
         goals = tuple((g["i"], tuple(g["pos"])) for g in obj["goals"])
