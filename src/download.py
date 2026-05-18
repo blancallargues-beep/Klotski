@@ -26,13 +26,21 @@ def list_puzzles() -> list[dict]:
         return json.loads(response.read())
 
 
-def download_puzzle(puzzle_id: str) -> Puzzle:
+def download_puzzle(puzzle_id: str) -> tuple[Puzzle, str]:
     """Descarrega un puzzle per ID i el retorna com a objecte Puzzle."""
     url = f"{BASE_URL}/api/puzzles/{puzzle_id}"
     with urllib.request.urlopen(url) as response:
         data = response.read().decode()
-    print("RAW JSON:", data[:500])  # DEBUG
-    return Puzzle.from_json(data), data
+
+    # ✅ FIX: l'API retorna {"puzzle": {...}, "stars": ...}
+    # cal extreure el camp "puzzle" abans de passar-ho a Puzzle.from_json
+    parsed = json.loads(data)
+    if isinstance(parsed, dict) and "puzzle" in parsed:
+        puzzle_json = json.dumps(parsed["puzzle"])
+    else:
+        puzzle_json = data  # format antic sense wrapper
+
+    return Puzzle.from_json(puzzle_json), puzzle_json
 
 
 def main() -> None:
@@ -75,7 +83,7 @@ def main() -> None:
 
     print(f"Descarregant puzzle '{puzzle_id}'...")
     try:
-        puzzle, raw_json = download_puzzle(puzzle_id)
+        puzzle, puzzle_json = download_puzzle(puzzle_id)
     except urllib.error.HTTPError as e:
         print(f"Error HTTP {e.code}: {e.reason}", file=sys.stderr)
         sys.exit(1)
@@ -84,7 +92,7 @@ def main() -> None:
         sys.exit(1)
 
     # Guardem el JSON formatat per llegibilitat
-    formatted = json.dumps(json.loads(raw_json), indent=2)
+    formatted = json.dumps(json.loads(puzzle_json), indent=2)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(formatted)
 

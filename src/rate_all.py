@@ -32,7 +32,7 @@ BASE_URL = "https://klotski.pauek.dev"
 def send_rating(puzzle_id: str, rating: float, token: str) -> dict:
     """Envia la valoració d'un puzzle al repositori."""
     url = f"{BASE_URL}/api/puzzles/{puzzle_id}/votes"
-    data = json.dumps({"rating": rating}).encode()
+    data = json.dumps({"stars": round(rating)}).encode()
     request = urllib.request.Request(
         url,
         data=data,
@@ -46,10 +46,10 @@ def send_rating(puzzle_id: str, rating: float, token: str) -> dict:
         return json.loads(response.read())
 
 
-def evaluate_puzzle(puzzle: Puzzle) -> tuple[float, dict]:
+def evaluate_puzzle(puzzle: Puzzle, max_states: int = 3000) -> tuple[float, dict]:
     """Construeix el graf, calcula les mesures i retorna la puntuació."""
-    g, state_index, goal_vertices, start_vertices = build_graph(puzzle)
-    measures = compute_measures(g, goal_vertices, start_vertices)
+    g, state_index, goal_vertices, start_vertices = build_graph(puzzle, max_states=max_states)
+    measures = compute_measures(puzzle, g, goal_vertices, start_vertices)
     s = score(measures)
     return s, measures
 
@@ -75,6 +75,10 @@ def rate_all(
     except urllib.error.URLError as e:
         print(f"Error de connexió: {e.reason}", file=sys.stderr)
         sys.exit(1)
+
+    # L'API pot retornar llista de strings (IDs) o de diccionaris
+    if puzzles_info and isinstance(puzzles_info[0], str):
+        puzzles_info = [{"id": pid, "rating": 0.0, "author": "desconegut"} for pid in puzzles_info]
 
     total = len(puzzles_info)
     print(f"Puzzles trobats: {total}\n")
@@ -124,10 +128,11 @@ def rate_all(
             continue
 
         stars = "⭐" * round(s)
+        bottleneck = measures.get("bottleneck_ratio", 0.0)
         print(f"  Puntuació: {stars} ({s:.2f}/5.00) | "
               f"estats={measures['n_states']}, "
               f"moviments={measures['n_moves']}, "
-              f"ponts={measures['n_bridges']}")
+              f"ponts={bottleneck:.3f}")
 
         results.append({
             "id": pid,

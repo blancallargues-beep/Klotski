@@ -5,11 +5,11 @@ Envia la valoració d'un puzzle al repositori compartit.
   python src/rate.py <id> <valoració> <token>
 
   <id>        : Identificador del puzzle al repositori
-  <valoració> : Puntuació entre 0.0 i 5.0
+  <valoració> : Puntuació entre 0 i 5 (enter)
   <token>     : Token d'autenticació personal
 
 Exemple:
-  python src/rate.py abc123 4.5 el_meu_token
+  python src/rate.py abc123 4 el_meu_token
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ BASE_URL = "https://klotski.pauek.dev"
 def send_rating(puzzle_id: str, rating: float, token: str) -> None:
     """Envia la valoració d'un puzzle al repositori."""
     url = f"{BASE_URL}/api/puzzles/{puzzle_id}/votes"
-    data = json.dumps({"rating": rating}).encode()
+    data = json.dumps({"stars": round(rating)}).encode()  # ✅ FIX: stars (int) en lloc de rating
     request = urllib.request.Request(
         url,
         data=data,
@@ -49,18 +49,17 @@ def main() -> None:
     try:
         rating = float(args[1])
     except ValueError:
-        print(f"Error: la valoració ha de ser un número (0.0–5.0), rebut: '{args[1]}'",
+        print(f"Error: la valoració ha de ser un número (0–5), rebut: '{args[1]}'",
               file=sys.stderr)
         sys.exit(1)
 
     if not 0.0 <= rating <= 5.0:
-        print(f"Error: la valoració ha d'estar entre 0.0 i 5.0, rebut: {rating}",
+        print(f"Error: la valoració ha d'estar entre 0 i 5, rebut: {rating}",
               file=sys.stderr)
         sys.exit(1)
 
     token = args[2]
-
-    print(f"Enviant valoració {rating:.2f} per al puzzle '{puzzle_id}'...")
+    print(f"Enviant valoració {round(rating)} per al puzzle '{puzzle_id}'...")
     try:
         result = send_rating(puzzle_id, rating, token)
         print(f"Valoració enviada correctament.")
