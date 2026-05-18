@@ -107,18 +107,18 @@ def score(m: dict) -> float:
     """Combina les mètriques en una nota de 0 a 5."""
     if m.get("n_moves", -1) < 0: return 0.0
 
-    # Normalitzacions (ajustades per puzzles reals)
-    f_indirection = min(1.0, (m["indirection"] - 1.0) / 5.0) # 6x indirection és ja molt alt
-    f_detour = min(1.0, m["detour_fraction"] / 0.4)          # 40% de passos enrere és brutal
-    f_bottleneck = min(1.0, m["bottleneck_ratio"] / 0.2)     # 20% de nodes crítics és molta estructura
-    f_rarity = m["solution_rarity"]**2                       # Accentua la raresa
-    f_moves = min(1.0, math.log1p(m["n_moves"]) / math.log1p(100))
+    # Normalitzacions ajustades per puzzles petits (3x3–5x5)
+    f_indirection = min(1.0, (m["indirection"] - 1.0) / 2.0) # 3x indirection ja és notable en puzzles petits
+    f_detour = min(1.0, m["detour_fraction"] / 0.25)          # 25% de passos enrere és significatiu
+    f_bottleneck = min(1.0, m["bottleneck_ratio"] / 0.15)     # 15% de ponts és molta estructura
+    f_rarity = m["solution_rarity"]**2                        # Accentua la raresa
+    f_moves = min(1.0, math.log1p(m["n_moves"]) / math.log1p(30))  # 30 moviments ja és molt per puzzles petits
 
     raw_score = (
-        0.35 * f_indirection + 
-        0.30 * f_detour + 
-        0.20 * f_bottleneck + 
-        0.10 * f_rarity + 
+        0.35 * f_indirection +
+        0.30 * f_detour +
+        0.20 * f_bottleneck +
+        0.10 * f_rarity +
         0.05 * f_moves
     )
     return round(min(5.0, raw_score * 5.0), 2)

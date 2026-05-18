@@ -66,7 +66,7 @@ def solve(puzzle: Puzzle) -> list[Move] | None:
 
 def moves_to_json(moves: list[Move]) -> str:
     """Converteix la llista de moviments al format JSON de l'especificació."""
-    return json.dumps([[piece_idx, direction] for piece_idx, direction, _ in moves], indent=2)
+    return json.dumps([[piece_idx, direction, dist] for piece_idx, direction, dist in moves], indent=2)
 
 
 def main() -> None:

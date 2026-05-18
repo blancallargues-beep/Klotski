@@ -46,7 +46,7 @@ def send_rating(puzzle_id: str, rating: float, token: str) -> dict:
         return json.loads(response.read())
 
 
-def evaluate_puzzle(puzzle: Puzzle, max_states: int = 3000) -> tuple[float, dict]:
+def evaluate_puzzle(puzzle: Puzzle, max_states: int = 10000) -> tuple[float, dict]:
     """Construeix el graf, calcula les mesures i retorna la puntuació."""
     g, state_index, goal_vertices, start_vertices = build_graph(puzzle, max_states=max_states)
     measures = compute_measures(puzzle, g, goal_vertices, start_vertices)
