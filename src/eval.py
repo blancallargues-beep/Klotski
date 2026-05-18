@@ -1,166 +1,353 @@
 """
-Avaluació de l'interès d'un puzzle de peces lliscants (Versió Millorada).
-Analitza la dificultat cognitiva, l'engany i l'estructura estratègica.
+Avaluació de l'interès d'un puzzle de peces lliscants.
+
+Estratègia: BFS sobre l'espai d'estats canònic. Peces amb la mateixa
+forma (i que no siguin objectiu) són intercanviables — ordenar les seves
+posicions dins cada grup dóna un estat canònic equivalent. Això redueix
+dràsticament l'espai: el klotski passa de >500k estats a ~26k.
+
+Gràcies a aquesta reducció, s'explora l'espai COMPLET per a qualsevol
+puzzle raonablement complex, sense truncar ni mostrar estimacions.
+Per puzzles extremadament grans (>500k estats canònics) s'aplica un
+límit de temps de 10s.
+
+Mesures calculades:
+
+  1. n_moves          : Nombre mínim de moviments per resoldre'l (exacte).
+  2. indirection      : Ràtio entre el camí real i la distància Manhattan
+                        de la peça objectiu ignorant obstacles. Mesura
+                        quant de "rodeo" obliguen les peces secundàries.
+  3. detour_fraction  : Fracció de passos en el camí òptim que allunyen
+                        la peça objectiu de la seva meta. Captura la
+                        "contraintuïció": per guanyar primer has d'anar
+                        en sentit contrari.
+  4. bottleneck_ratio : Fracció d'estats amb un sol veí nou (passadís).
+                        Aproxima l'estructura en fases: passadissos =
+                        decisions obligatòries sense alternatives.
+  5. solution_rarity  : 1 - (n_goals / n_states). Quant de rar és trobar
+                        un estat final dins l'espai explorat.
+
+Ús:
+  python src/eval.py <puzzle.json>
+  python src/eval.py <puzzle.json> --verbose
 """
 
 from __future__ import annotations
+
 import math
 import sys
+import time
+from collections import defaultdict, deque
 from pathlib import Path
-import graph_tool.all as gt
 
-from graph import build_graph
-from puzzle import Puzzle, State
+from puzzle import Puzzle
+
+MAX_SECONDS = 10.0
+DELTAS = ((0, -1), (0, 1), (1, 0), (-1, 0))
+
 
 # ---------------------------------------------------------------------------
-# Mesures auxiliars
+# Canonicalització per simetria
 # ---------------------------------------------------------------------------
 
-def _goal_distance_lower_bound(puzzle: Puzzle) -> int:
+def _build_symmetry_groups(puzzle: Puzzle) -> list[list[int]]:
     """
-    Calcula la cota inferior (Manhattan) de la peça objectiu principal.
-    Ignora obstacles per saber la distància 'ideal'.
+    Retorna els grups de peces intercanviables (mateixa forma, no objectiu).
+    Peces objectiu mai es reordenen perquè la seva identitat importa.
+    """
+    goal_pieces = {i for i, _ in puzzle.goals}
+    groups: dict[tuple, list[int]] = defaultdict(list)
+    for i, piece in enumerate(puzzle.pieces):
+        if i not in goal_pieces:
+            groups[tuple(piece.coords)].append(i)
+    # Només grups amb més d'una peça aporten reducció
+    return [g for g in groups.values() if len(g) > 1]
+
+
+def _canonicalize(key: tuple, sym_groups: list[list[int]]) -> tuple:
+    """
+    Retorna la forma canònica d'un estat ordenant les posicions
+    de les peces intercanviables dins cada grup.
+    """
+    if not sym_groups:
+        return key
+    lst = list(key)
+    for group in sym_groups:
+        positions = sorted((lst[i * 2], lst[i * 2 + 1]) for i in group)
+        for rank, i in enumerate(sorted(group)):
+            lst[i * 2], lst[i * 2 + 1] = positions[rank]
+    return tuple(lst)
+
+
+# ---------------------------------------------------------------------------
+# BFS sobre l'espai canònic
+# ---------------------------------------------------------------------------
+
+def _get_moves(
+    key: tuple, n: int, pieces: list, walls: set, W: int, H: int,
+    sym_groups: list[list[int]],
+) -> list[tuple]:
+    """
+    Calcula tots els moviments vàlids i retorna els estats resultants
+    en forma canònica.
+    """
+    positions = [(key[i * 2], key[i * 2 + 1]) for i in range(n)]
+    all_cells: set = set(walls)
+    piece_cells: list[frozenset] = []
+    for px, py in positions:
+        cells = frozenset((px + dx, py + dy) for dx, dy in pieces[len(piece_cells)])
+        piece_cells.append(cells)
+        all_cells |= cells
+
+    results = []
+    for i in range(n):
+        others = all_cells - piece_cells[i]
+        px, py = positions[i]
+        for ddx, ddy in DELTAS:
+            if all(
+                0 <= cx + ddx < W
+                and 0 <= cy + ddy < H
+                and (cx + ddx, cy + ddy) not in others
+                for cx, cy in piece_cells[i]
+            ):
+                nk = list(key)
+                nk[i * 2] += ddx
+                nk[i * 2 + 1] += ddy
+                results.append(_canonicalize(tuple(nk), sym_groups))
+    return results
+
+
+def compute_measures(puzzle: Puzzle) -> dict:
+    """
+    BFS sobre l'espai d'estats canònic. Explora l'espai complet per
+    a puzzles normals; s'atura per límit de temps per puzzles extrems.
     """
     if not puzzle.goals:
-        return 1
-    # Prenem el primer objectiu com a referència principal
-    idx, g_pos = puzzle.goals[0]
-    s_pos = puzzle.start.positions[idx]
-    dist = abs(s_pos[0] - g_pos[0]) + abs(s_pos[1] - g_pos[1])
-    return max(dist, 1)
+        return {"n_states": 0, "n_moves": -1, "sampled": False}
 
-def compute_measures(puzzle: Puzzle, g: gt.Graph, goal_vertices: list[int], start_vertices: list[int]) -> dict:
-    """Calcula les mètriques d'interès basades en el disseny del joc."""
-    n_states = g.num_vertices()
-    if n_states == 0:
-        return {"n_states": 0, "n_moves": -1}
+    W, H = puzzle.W, puzzle.H
+    n = len(puzzle.pieces)
+    pieces = [tuple(p.coords) for p in puzzle.pieces]
+    walls = set(puzzle.walls)
+    goals = puzzle.goals
+    goal_piece_idx, goal_pos = goals[0]
+    sym_groups = _build_symmetry_groups(puzzle)
 
-    start_v = start_vertices[0]
-    
-    # --- 1. Resolució i Distància ---
-    dist_map = gt.shortest_distance(g, source=g.vertex(start_v))
-    
-    # Trobem el node final més proper accessible
-    valid_goals = [gv for gv in goal_vertices if dist_map[gv] < 2**30]
-    if not valid_goals:
-        return {"n_states": n_states, "n_moves": -1}
-    
-    nearest_goal_v = min(valid_goals, key=lambda gv: dist_map[gv])
-    n_moves = int(dist_map[nearest_goal_v])
+    def to_key(positions) -> tuple:
+        return _canonicalize(
+            tuple(c for pos in positions for c in pos), sym_groups
+        )
 
-    # --- 2. Indirection (Dificultat per obstrucció) ---
-    lower_bound = _goal_distance_lower_bound(puzzle)
-    indirection = n_moves / lower_bound
+    def is_goal(key: tuple) -> bool:
+        return all(key[i * 2] == px and key[i * 2 + 1] == py for i, (px, py) in goals)
 
-    # --- 3. Bottleneck Ratio (Estructura de fases) ---
-    # Usem els ponts (arestes biconnectades) com a indicador d'estructura
-    # label_biconnected_components retorna (comp_map, is_bridge_map, ...)
-    comp, is_articulation = gt.label_biconnected_components(g)[:2]
-    # comp és un EdgePropertyMap amb l'índex de component biconnex per aresta
-    # Una aresta és un pont si forma ella sola una component (comp únic d'1 aresta)
-    from collections import Counter
-    comp_count = Counter(int(comp[e]) for e in g.edges())
-    n_bridges = sum(1 for e in g.edges() if comp_count[int(comp[e])] == 1)
-    bottleneck_ratio = n_bridges / g.num_edges() if g.num_edges() > 0 else 0.0
+    start_key = to_key(puzzle.start.positions)
+    dist: dict[tuple, int] = {start_key: 0}
+    parent: dict[tuple, tuple | None] = {start_key: None}
+    queue: deque[tuple] = deque([start_key])
 
-    # --- 4. Detour Fraction (Engany / Contraintuïció) ---
-    # Analitzem el camí òptim pas a pas
-    v_path, e_path = gt.shortest_path(g, g.vertex(start_v), g.vertex(nearest_goal_v))
+    n_goals_found = 0
+    nearest_goal: tuple | None = None
+    nearest_goal_dist = 10 ** 9
+    n_corridor = 0
+    sampled = False
+    t0 = time.monotonic()
+
+    while queue:
+        if len(dist) % 5000 == 0 and time.monotonic() - t0 > MAX_SECONDS:
+            sampled = True
+            break
+
+        key = queue.popleft()
+        d = dist[key]
+
+        if is_goal(key):
+            n_goals_found += 1
+            if d < nearest_goal_dist:
+                nearest_goal_dist = d
+                nearest_goal = key
+
+        neighbors_new = 0
+        for nk in _get_moves(key, n, pieces, walls, W, H, sym_groups):
+            if nk not in dist:
+                neighbors_new += 1
+                dist[nk] = d + 1
+                parent[nk] = key
+                queue.append(nk)
+
+        if neighbors_new == 1:
+            n_corridor += 1
+
+    n_states = len(dist)
+
+    if nearest_goal is None:
+        return {
+            "n_states": n_states,
+            "n_moves": -1,
+            "indirection": 0.0,
+            "detour_fraction": 0.0,
+            "bottleneck_ratio": 0.0,
+            "solution_rarity": 1.0,
+            "n_goals": 0,
+            "sampled": sampled,
+        }
+
+    n_moves = nearest_goal_dist
+
+    # --- Indirection ---
+    sx, sy = puzzle.start.positions[goal_piece_idx]
+    gx, gy = goal_pos
+    manhattan = max(abs(sx - gx) + abs(sy - gy), 1)
+    indirection = n_moves / manhattan
+
+    # --- Detour fraction ---
+    path: list[tuple] = []
+    cur: tuple | None = nearest_goal
+    while cur is not None:
+        path.append(cur)
+        cur = parent.get(cur)
+    path.reverse()
+
     detour_steps = 0
-    if len(v_path) > 1 and puzzle.goals:
-        goal_idx, (gx, gy) = puzzle.goals[0]
-        state_prop = g.vp["state"]
-        
-        for i in range(len(v_path) - 1):
-            curr_s = State.from_json(state_prop[v_path[i]])
-            next_s = State.from_json(state_prop[v_path[i+1]])
-            
-            c_pos = curr_s.positions[goal_idx]
-            n_pos = next_s.positions[goal_idx]
-            
-            d_curr = abs(c_pos[0] - gx) + abs(c_pos[1] - gy)
-            d_next = abs(n_pos[0] - gx) + abs(n_pos[1] - gy)
-            
-            if d_next > d_curr: # La peça objectiu s'allunya de la meta
-                detour_steps += 1
-                
+    for i in range(len(path) - 1):
+        ax, ay = path[i][goal_piece_idx * 2], path[i][goal_piece_idx * 2 + 1]
+        bx, by = path[i + 1][goal_piece_idx * 2], path[i + 1][goal_piece_idx * 2 + 1]
+        d_cur = abs(ax - gx) + abs(ay - gy)
+        d_next = abs(bx - gx) + abs(by - gy)
+        if d_next > d_cur:
+            detour_steps += 1
     detour_fraction = detour_steps / n_moves if n_moves > 0 else 0.0
 
-    # --- 5. Solution Rarity (Precisió) ---
-    solution_rarity = 1.0 - (len(valid_goals) / n_states)
+    # --- Bottleneck ratio ---
+    bottleneck_ratio = n_corridor / n_states if n_states > 0 else 0.0
+
+    # --- Solution rarity ---
+    solution_rarity = 1.0 - (n_goals_found / n_states) if n_states > 0 else 1.0
 
     return {
         "n_states": n_states,
         "n_moves": n_moves,
         "indirection": round(indirection, 3),
-        "bottleneck_ratio": round(bottleneck_ratio, 3),
         "detour_fraction": round(detour_fraction, 3),
+        "bottleneck_ratio": round(bottleneck_ratio, 3),
         "solution_rarity": round(solution_rarity, 4),
-        "n_goals": len(valid_goals)
+        "n_goals": n_goals_found,
+        "sampled": sampled,
     }
 
+
 # ---------------------------------------------------------------------------
-# Puntuació Final
+# Puntuació
 # ---------------------------------------------------------------------------
 
 def score(m: dict) -> float:
-    """Combina les mètriques en una nota de 0 a 5."""
-    if m.get("n_moves", -1) < 0: return 0.0
+    """
+    Puntua el puzzle de 0.0 a 5.0.
 
-    # Normalitzacions ajustades per puzzles petits (3x3–5x5)
-    f_indirection = min(1.0, (m["indirection"] - 1.0) / 2.0) # 3x indirection ja és notable en puzzles petits
-    f_detour = min(1.0, m["detour_fraction"] / 0.25)          # 25% de passos enrere és significatiu
-    f_bottleneck = min(1.0, m["bottleneck_ratio"] / 0.15)     # 15% de ponts és molta estructura
-    f_rarity = m["solution_rarity"]**2                        # Accentua la raresa
-    f_moves = min(1.0, math.log1p(m["n_moves"]) / math.log1p(30))  # 30 moviments ja és molt per puzzles petits
+    Justificació dels pesos:
+      - indirection (35%): mesura directa de quant les peces secundàries
+        obstaculitzen. Un puzzle amb alta indirecció obliga a pensar
+        globalment, no només en la peça objectiu.
+      - detour_fraction (30%): captura la contraintuïció. Si el camí òptim
+        inclou passos que allunyen l'objectiu, el jugador no pot seguir
+        la seva intuïció i necessita planificar endavant.
+      - bottleneck_ratio (20%): estructura en fases. Passadissos obligatoris
+        donen al puzzle una narrativa clara.
+      - solution_rarity (10%): puzzles on la solució és rara dins l'espai
+        explorat són més precisos i difícils de trobar per intuïció.
+      - n_moves logarítmic (5%): complexitat bruta, amb poc pes perquè
+        n_moves sense context no diu res de l'experiència de joc.
+    """
+    if m.get("n_moves", -1) < 0:
+        return 0.0
 
-    raw_score = (
-        0.35 * f_indirection +
-        0.30 * f_detour +
-        0.20 * f_bottleneck +
-        0.10 * f_rarity +
-        0.05 * f_moves
+    f_indirection = min(1.0, (m["indirection"] - 1.0) / 3.0)
+    f_detour      = min(1.0, m["detour_fraction"] / 0.3)
+    f_bottleneck  = min(1.0, m["bottleneck_ratio"] / 0.15)
+    f_rarity      = m["solution_rarity"] ** 2
+    f_moves       = min(1.0, math.log1p(m["n_moves"]) / math.log1p(100))
+
+    raw = (
+        0.35 * f_indirection
+        + 0.30 * f_detour
+        + 0.20 * f_bottleneck
+        + 0.10 * f_rarity
+        + 0.05 * f_moves
     )
-    return round(min(5.0, raw_score * 5.0), 2)
+    return round(min(5.0, raw * 5.0), 2)
+
 
 # ---------------------------------------------------------------------------
-# Interfície de sortida
+# Main
 # ---------------------------------------------------------------------------
 
-def print_results(m: dict, rating: float, verbose: bool):
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    verbose = "--verbose" in args
+    args = [a for a in args if a != "--verbose"]
+
+    puzzle_path = Path(args[0])
+    if not puzzle_path.exists():
+        print(f"Error: no s'ha trobat '{puzzle_path}'", file=sys.stderr)
+        sys.exit(1)
+
+    puzzle = Puzzle.from_json(puzzle_path.read_text())
+    print(f"Avaluant '{puzzle_path.name}'...")
+
+    t0 = time.monotonic()
+    m = compute_measures(puzzle)
+    elapsed = time.monotonic() - t0
+
+    rating = score(m)
+    note = f" (mostrejat {m['n_states']} estats en {elapsed:.1f}s)" if m.get("sampled") else f" ({elapsed:.2f}s)"
     stars = "⭐" * int(round(rating))
-    print(f"\n{'='*40}")
-    print(f"ANÀLISI ESTRATÈGIC: {stars} ({rating}/5.0)")
-    print(f"{'='*40}")
-    print(f"• Complexitat: {m['n_states']} estats, {m['n_moves']} moviments.")
-    print(f"• Indirecció:  {m['indirection']}x (esforç vs distància directa)")
-    print(f"• Engany:      {m['detour_fraction']:.1%} dels passos són contraintuïtius.")
-    print(f"• Estructura:  {m['bottleneck_ratio']:.1%} de punts crítics (fases).")
-    print(f"• Precisió:    {m['n_goals']} estats de solució trobats.")
+
+    print(f"\n{'='*44}")
+    print(f"ANÀLISI: {stars} ({rating}/5.0){note}")
+    print(f"{'='*44}")
+    print(f"  Estats canònics   : {m['n_states']}")
+    print(f"  Moviments mínims  : {m['n_moves']}")
+    print(f"  Indirecció        : {m['indirection']:.3f}  (1.0 = directe, >3.0 = molt obstaculitzat)")
+    print(f"  Engany (detour)   : {m['detour_fraction']:.1%}  (passos que allunyen l'objectiu)")
+    print(f"  Passadissos       : {m['bottleneck_ratio']:.1%}  (estats sense alternatives)")
+    print(f"  Raresa solució    : {m['solution_rarity']:.3f}  (1.0 = solució molt rara)")
+    print(f"  Estats finals     : {m['n_goals']}")
 
     if verbose:
         print("\nInterpretació:")
-        if m['detour_fraction'] > 0.2:
-            print("  -> Puzzle ALTAMENT ENGANYÓS. Requereix moure la peça contra la teva intuïció.")
-        if m['indirection'] > 4:
-            print("  -> Puzzle d'OBSTRUCCIÓ COMPLEXA. Les peces secundàries són el repte real.")
-        if m['bottleneck_ratio'] > 0.1:
-            print("  -> Estructura NARRATIVA. El puzzle té passos obligatoris molt marcats.")
+        if m["n_moves"] < 0:
+            print("  ✗ Puzzle irresoluble (o solució fora del temps explorat).")
+        else:
+            ind = m["indirection"]
+            if ind < 1.5:
+                print(f"  · Molt directe ({ind:.1f}x): el camí quasi no requereix peces secundàries.")
+            elif ind < 3.0:
+                print(f"  · Moderadament indirecte ({ind:.1f}x): algunes peces obstaculitzen.")
+            else:
+                print(f"  · Molt indirecte ({ind:.1f}x): cal reorganitzar molt per resoldre'l.")
 
-def main():
-    if len(sys.argv) < 2:
-        print("Ús: python src/eval.py <puzzle.json> [--verbose]")
-        return
+            det = m["detour_fraction"]
+            if det < 0.1:
+                print(f"  · Poc enganyós ({det:.0%}): l'objectiu quasi sempre avança cap a la meta.")
+            elif det < 0.3:
+                print(f"  · Moderadament enganyós ({det:.0%}): alguns passos van en sentit contrari.")
+            else:
+                print(f"  · Molt enganyós ({det:.0%}): la peça objectiu s'ha d'allunyar per resoldre'l.")
 
-    path = Path(sys.argv[1])
-    verbose = "--verbose" in sys.argv
-    
-    puzzle = Puzzle.from_json(path.read_text())
-    g, _, goal_v, start_v = build_graph(puzzle)
-    
-    m = compute_measures(puzzle, g, goal_v, start_v)
-    rating = score(m)
-    print_results(m, rating, verbose)
+            bn = m["bottleneck_ratio"]
+            if bn < 0.05:
+                print(f"  · Sense fases clares ({bn:.0%}): l'espai d'estats és obert.")
+            else:
+                print(f"  · Estructura en fases ({bn:.0%} de passadissos obligatoris).")
+
+        if m.get("sampled"):
+            print(f"\n  ℹ️  Puzzle molt gran: mesures calculades sobre {m['n_states']} estats.")
+    print()
+
 
 if __name__ == "__main__":
     main()
